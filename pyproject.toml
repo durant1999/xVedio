@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-understanding"
+version = "0.1.0"
+description = "Self-hosted video understanding pipeline for VL, OCR, ASR, fusion, summary, and QA."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "PyYAML>=6.0.2",
+]
+
+[project.optional-dependencies]
+client = [
+  "yt-dlp>=2025.1.1",
+]
+asr = [
+  "faster-whisper>=1.1.0",
+]
+server = [
+  "vllm>=0.11.0",
+  "qwen-vl-utils==0.0.14",
+]
+quant = [
+  "autoawq>=0.2.7",
+]
+dev = [
+  "ruff>=0.6.0",
+]
+
+[project.scripts]
+vu = "video_understanding.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["video_understanding*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+

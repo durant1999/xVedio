@@ -1,0 +1,62 @@
+workdir: runs
+
+download:
+  # Downloaders are tried in order. yt-dlp is the generic fast path; the web
+  # adapters are fallbacks for sites that yt-dlp cannot handle in this setup.
+  order:
+    - yt-dlp
+    - twitter-video-downloader
+    - ideaflow
+  yt-dlp:
+    enabled: true
+    no_playlist: true
+  twitter-video-downloader:
+    enabled: true
+    base_url: https://twittervideodownloader.com/en/
+    timeout_seconds: 120
+  ideaflow:
+    enabled: true
+    base_url: https://parse.ideaflow.top/
+    timeout_seconds: 120
+
+video:
+  # 10-15 minute Douyin videos: start with 1 fps, raise to 2 fps only when short actions are missed.
+  fps: 1.0
+  segment_seconds: 45
+  max_side: 960
+  jpeg_quality: 3
+
+vl:
+  base_url: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+  model: Qwen/Qwen3-VL-32B-Instruct-AWQ
+  temperature: 0.0
+  max_tokens: 1800
+  timeout_seconds: 600
+
+asr:
+  backend: faster-whisper
+  model: large-v3
+  device: cuda
+  device_index: 1
+  compute_type: float16
+  language: zh
+  beam_size: 5
+
+fusion:
+  window_seconds: 45
+
+summary:
+  base_url: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+  model: Qwen/Qwen3-VL-32B-Instruct-AWQ
+  temperature: 0.1
+  max_tokens: 2400
+  timeout_seconds: 600
+
+ab_eval:
+  judge_base_url: http://127.0.0.1:8000/v1
+  judge_api_key: EMPTY
+  judge_model: Qwen/Qwen3-VL-32B-Instruct-AWQ
+  max_tokens: 2400
+  timeout_seconds: 600

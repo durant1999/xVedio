@@ -8,10 +8,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from server.app import settings as settings_module
 from server.app.auth import require_auth
 from server.app.jobs import get_manager
+from server.app.main import app
 
 
 class BFFServerTests(unittest.TestCase):
@@ -59,6 +61,13 @@ class BFFServerTests(unittest.TestCase):
         manager = object()
         request.app.state.job_manager = manager
         self.assertIs(get_manager(request), manager)  # type: ignore[arg-type]
+
+    def test_cors_middleware_allows_app_clients(self):
+        middleware = next(item for item in app.user_middleware if item.cls is CORSMiddleware)
+
+        self.assertEqual(middleware.kwargs["allow_origins"], ["*"])
+        self.assertEqual(middleware.kwargs["allow_methods"], ["*"])
+        self.assertEqual(middleware.kwargs["allow_headers"], ["*"])
 
 
 if __name__ == "__main__":

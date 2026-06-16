@@ -17,7 +17,7 @@
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e ".[client,asr,server]"
+pip install -e ".[client,asr,server,mcp]"
 sudo apt-get install -y ffmpeg
 ```
 
@@ -145,3 +145,35 @@ CUDA_VISIBLE_DEVICES=2 PORT=8002 scripts/launch_vllm_qwen3_vl_8b_bf16.sh
 质量优先且预算允许：卡 2 起第二个 32B-AWQ 副本，把上游任务按视频维度分发到 `:8000` 和 `:8002`。
 
 精确定位优先：卡 2 放 embedding，按 `context.md` 的时间窗切 chunk，建立视频 RAG。
+
+## 8. MCP 给 Mac Codex 调用
+
+GPU 服务器启动 MCP server：
+
+```bash
+conda activate video_understand
+scripts/launch_mcp_server.sh
+```
+
+默认只监听 `127.0.0.1:9000/mcp`。Mac 通过 SSH tunnel 访问：
+
+```bash
+ssh -L 9000:127.0.0.1:9000 gpu-server
+```
+
+Mac 的 `~/.codex/config.toml`：
+
+```toml
+[mcp_servers.video_understanding]
+url = "http://127.0.0.1:9000/mcp"
+tool_timeout_sec = 120
+```
+
+MCP 工具是异步任务模型：先 `submit_video_job` 返回 `job_id`，再 `get_job_status` 轮询，最后 `get_job_artifact` 读取 `summary` 或 `context`。
+
+安全说明：
+
+- 仓库公开不等于服务公开。服务是否能被别人访问，取决于运行时监听地址、SSH/VPN/反向代理和防火墙。
+- `scripts/launch_mcp_server.sh` 默认只绑定 `127.0.0.1`，外部机器无法直接连接。
+- 有 VPN 时也不要把 MCP server 绑定到 `0.0.0.0` 或 VPN 网卡 IP，除非已经加了鉴权和防火墙；否则 VPN 内其他机器可能访问。
+- 推荐保持服务器端 `127.0.0.1:9000`，Mac 使用 SSH `LocalForward` 转发。

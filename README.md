@@ -84,7 +84,7 @@ conda create -n video_understand python=3.11 -y
 conda activate video_understand
 
 pip install -U pip
-pip install -e ".[client,asr,server]"
+pip install -e ".[client,asr,server,mcp]"
 pip install "vllm==0.11.0" "transformers>=4.57.1,<5" "qwen-vl-utils==0.0.14"
 ```
 
@@ -252,6 +252,69 @@ python -m video_understanding summarize \
 
 `LIMIT_MM_IMAGES` 要覆盖单段图片数。默认 `45s * 1fps = 45`，服务脚本默认 `LIMIT_MM_IMAGES=80`。
 
+## MCP Server For Codex
+
+本仓库可以作为 MCP server 暴露给 Mac 本地 Codex。推荐方式是 GPU 服务器本地启动 MCP HTTP server，Mac 通过 SSH tunnel 访问，不把服务裸露到公网。
+
+GPU 服务器启动：
+
+```bash
+conda activate video_understand
+scripts/launch_mcp_server.sh
+```
+
+默认监听：
+
+```text
+http://127.0.0.1:9000/mcp
+```
+
+如果不激活 conda 环境，也可以显式指定：
+
+```bash
+CONDA_ENV=video_understand scripts/launch_mcp_server.sh
+```
+
+Mac 上建立 SSH tunnel：
+
+```bash
+ssh -L 9000:127.0.0.1:9000 gpu-server
+```
+
+Mac 的 `~/.codex/config.toml` 添加：
+
+```toml
+[mcp_servers.video_understanding]
+url = "http://127.0.0.1:9000/mcp"
+tool_timeout_sec = 120
+```
+
+Codex 里可用的 MCP 工具：
+
+- `get_server_info`：查看 MCP server 配置和工作流。
+- `submit_video_job`：提交 URL、分享文案或服务器本地视频路径，立即返回 `job_id`。
+- `get_job_status`：查询任务状态。
+- `list_jobs`：列出最近任务。
+- `get_job_artifact`：读取 `summary/context/visual/asr/fused/log/download_metadata` 等允许的 job artifact。
+- `ask_video`：基于已有 `context.md` 对视频做 QA。
+- `cancel_job`：取消排队或运行中的任务。
+
+MCP 采用异步任务模型。不要让工具调用同步等待完整 10-15 分钟视频处理；正确流程是：
+
+```text
+submit_video_job -> get_job_status -> get_job_artifact(summary/context) -> ask_video
+```
+
+安全边界：
+
+- MCP server 默认只绑定 `127.0.0.1`。
+- job 输出固定在 `runs/mcp_jobs/<job_id>/`。
+- artifact 读取使用 allow list，不能读任意服务器路径。
+- 如需跨机器访问，优先用 SSH tunnel、VPN 或带鉴权的反向代理。
+- 公开 GitHub 仓库不会让运行中的 MCP 服务自动暴露。真正决定可访问性的是运行时监听地址和网络转发配置。
+- 不要把 `HOST` 改成 `0.0.0.0` 或 VPN 网卡 IP，除非前面有鉴权和防火墙；否则 VPN 内其他机器可能访问这个 MCP 服务。
+- 推荐保持服务器端 `127.0.0.1:9000`，Mac 通过 `LocalForward 127.0.0.1:9000 127.0.0.1:9000` 接入。
+
 ## A/B Evaluation
 
 把当前 VL+ASR 输出和 Omni 端到端输出做对比：
@@ -301,6 +364,7 @@ git status --short
 - 增加 `--skip-asr`、`--skip-vl`、`--skip-fusion`，让长视频失败后可断点续跑。
 - 增加本地 ASR 模型路径配置，避免生产环境首次运行时联网下载 `large-v3`。
 - 增加 Qwen3-ASR backend，与 faster-whisper 做中文口播质量对比。
+- 为 MCP HTTP 增加内建 Bearer token 校验，减少对反向代理鉴权的依赖。
 - 增加视频下载器的真实站点集成测试和失败样例记录。
 - 增加批量任务队列和多 VL 副本 router，支持 GPU 0/2 并发刷量。
 - 增加 embedding/RAG：按 `context.md` 时间窗切 chunk，支持精确片段检索。

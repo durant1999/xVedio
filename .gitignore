@@ -4,5 +4,7 @@ __pycache__/
 .ruff_cache/
 runs/
 downloads/
+models/
+logs/
+.run/
 *.egg-info/
-

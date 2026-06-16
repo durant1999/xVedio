@@ -20,7 +20,7 @@ args=(
   --max-model-len "$MAX_MODEL_LEN"
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
   --dtype bfloat16
-  --limit-mm-per-prompt "image=$LIMIT_MM_IMAGES"
+  --limit-mm-per-prompt "{\"image\": $LIMIT_MM_IMAGES}"
 )
 
 if [[ -n "${MM_PROCESSOR_KWARGS:-}" ]]; then
@@ -28,4 +28,3 @@ if [[ -n "${MM_PROCESSOR_KWARGS:-}" ]]; then
 fi
 
 exec vllm "${args[@]}"
-

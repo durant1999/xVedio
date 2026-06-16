@@ -22,6 +22,7 @@ from .utils import (
 TWITTER_DOMAINS = {"twitter.com", "x.com"}
 MP4_URL_RE = re.compile(r"https?://[^\"'<>\s]+?\.mp4(?:\?[^\"'<>\s]+)?")
 RESOLUTION_RE = re.compile(r"(?P<width>\d{3,5})x(?P<height>\d{3,5})")
+HTML_PREFIXES = (b"<!doctype", b"<html", b"<!DOCTYPE", b"<HTML")
 
 
 class HiddenInputParser(HTMLParser):
@@ -80,19 +81,44 @@ def _video_score(url: str) -> int:
     return max(scores) if scores else 0
 
 
+def _is_direct_video_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    return hostname == "video.twimg.com" or path.endswith(".mp4")
+
+
+def _video_url_from_href(href: str, *, base_url: str) -> str | None:
+    normalized = normalize_media_url(html.unescape(href), base_url=base_url, prefer_https=False)
+    if _is_direct_video_url(normalized):
+        return normalized
+
+    parsed = urllib.parse.urlparse(normalized)
+    query_values = urllib.parse.parse_qs(parsed.query)
+    for values in query_values.values():
+        for value in values:
+            value = html.unescape(urllib.parse.unquote(value))
+            if _is_direct_video_url(value):
+                return value
+            match = MP4_URL_RE.search(value)
+            if match:
+                return html.unescape(match.group(0))
+    return None
+
+
 def extract_video_links(page_html: str, *, base_url: str) -> list[str]:
     candidates: list[str] = []
     for match in MP4_URL_RE.finditer(page_html):
-        candidates.append(html.unescape(match.group(0)))
+        candidate = html.unescape(match.group(0))
+        if _is_direct_video_url(candidate):
+            candidates.append(candidate)
 
     parser = AnchorParser()
     parser.feed(page_html)
-    for href, text in parser.anchors:
-        normalized = normalize_media_url(html.unescape(href), base_url=base_url, prefer_https=False)
-        lower = normalized.lower()
-        label = text.lower()
-        if ".mp4" in lower or "video.twimg.com" in lower or "download" in label:
-            candidates.append(normalized)
+    for href, _text in parser.anchors:
+        candidate = _video_url_from_href(href, base_url=base_url)
+        if candidate:
+            candidates.append(candidate)
 
     unique: list[str] = []
     seen: set[str] = set()
@@ -102,6 +128,73 @@ def extract_video_links(page_html: str, *, base_url: str) -> list[str]:
         seen.add(candidate)
         unique.append(candidate)
     return sorted(unique, key=_video_score, reverse=True)
+
+
+def _source_origin(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    return f"{parsed.scheme}://{parsed.netloc}/"
+
+
+def _twitter_media_header_candidates(source_url: str) -> list[dict[str, str]]:
+    base_headers = {
+        "Accept": "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Sec-Fetch-Dest": "video",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
+    }
+    referrers = [None, _source_origin(source_url), "https://x.com/", "https://twitter.com/"]
+    candidates: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for referrer in referrers:
+        headers = dict(base_headers)
+        if referrer:
+            headers["Referer"] = referrer
+        key = tuple(sorted(headers.items()))
+        if key not in seen:
+            candidates.append(headers)
+            seen.add(key)
+    return candidates
+
+
+def _looks_like_mp4(path: Path) -> bool:
+    with path.open("rb") as handle:
+        header = handle.read(4096)
+    stripped = header.lstrip()
+    if any(stripped.startswith(prefix) for prefix in HTML_PREFIXES):
+        return False
+    return b"ftyp" in header[:64]
+
+
+def download_twitter_media(
+    media_url: str,
+    output_dir: Path,
+    *,
+    filename: str,
+    source_url: str,
+    timeout_seconds: int,
+) -> Path:
+    errors: list[str] = []
+    for headers in _twitter_media_header_candidates(source_url):
+        referrer = headers.get("Referer", "<none>")
+        try:
+            path = download_url_to_file(
+                media_url,
+                output_dir,
+                filename=filename,
+                headers=headers,
+                timeout_seconds=timeout_seconds,
+            )
+            if _looks_like_mp4(path):
+                return path
+            path.unlink(missing_ok=True)
+            errors.append(f"Referer={referrer}: downloaded response was not an mp4")
+        except PipelineError as exc:
+            errors.append(f"Referer={referrer}: {exc}")
+    detail = "\n".join(f"- {error}" for error in errors)
+    raise PipelineError(f"Twitter media URL found but all download attempts failed:\n{detail}")
 
 
 class TwitterVideoDownloader:
@@ -152,11 +245,11 @@ class TwitterVideoDownloader:
         errors: list[str] = []
         for index, link in enumerate(links):
             try:
-                path = download_url_to_file(
+                path = download_twitter_media(
                     link,
                     output_dir,
                     filename=f"{stem}_{index:02d}.mp4",
-                    headers={"Referer": base_url},
+                    source_url=url,
                     timeout_seconds=timeout_seconds,
                 )
                 return DownloadResult(

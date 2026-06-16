@@ -21,16 +21,26 @@ pip install -e ".[client,asr,server]"
 sudo apt-get install -y ffmpeg
 ```
 
+当前已验证组合是 `vllm==0.11.0` + `transformers==4.57.1`。不要让 `transformers` 升到 5.x；vLLM 0.11 的 tokenizer 缓存逻辑仍依赖 4.x 的 `all_special_tokens_extended` 属性。
+
 如果用 URL 输入，需要 `yt-dlp`；如果只处理本地 mp4，可以不走下载命令。
 
 ## 2. 权重
 
-优先找 `Qwen3-VL-32B-Instruct` 的 AWQ-INT4 社区量化权重。没有可用量化版时，用：
+当前采用 `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` 社区量化权重：
+
+```bash
+hf download QuantTrio/Qwen3-VL-32B-Instruct-AWQ \
+  --local-dir models/Qwen3-VL-32B-Instruct-AWQ \
+  --max-workers 3
+```
+
+如果这版后续 A/B 质量不过关，再回到官方 `Qwen/Qwen3-VL-32B-Instruct` 自量化：
 
 ```bash
 pip install -e ".[quant]"
-MODEL_PATH=/models/Qwen3-VL-32B-Instruct \
-OUTPUT_PATH=/models/Qwen3-VL-32B-Instruct-AWQ \
+MODEL_PATH=models/Qwen3-VL-32B-Instruct \
+OUTPUT_PATH=models/Qwen3-VL-32B-Instruct-AWQ \
 scripts/quantize_qwen3_vl_awq.sh
 ```
 
@@ -38,10 +48,38 @@ scripts/quantize_qwen3_vl_awq.sh
 
 ## 3. 卡 0 启动 VL
 
+推荐用后台管理脚本启动。脚本会写入 PID/日志，并等待 OpenAI-compatible `/v1/models` 健康检查。先激活你的 Python/conda 环境，或用 `CONDA_ENV=<env-name>` 显式指定：
+
+```bash
+conda activate video_understand
+scripts/manage_vl_server.sh start
+scripts/manage_vl_server.sh status
+scripts/manage_vl_server.sh tail
+```
+
+停止或重启：
+
+```bash
+scripts/manage_vl_server.sh stop
+scripts/manage_vl_server.sh restart
+```
+
+常用覆盖项：
+
+```bash
+CONDA_ENV=video_understand \
+CUDA_VISIBLE_DEVICES=0 \
+PORT=8000 \
+START_TIMEOUT=1200 \
+scripts/manage_vl_server.sh start
+```
+
+如果要前台调试 vLLM，再直接运行底层启动器：
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-MODEL=/models/Qwen3-VL-32B-Instruct-AWQ \
-SERVED_MODEL_NAME=Qwen/Qwen3-VL-32B-Instruct-AWQ \
+MODEL=models/Qwen3-VL-32B-Instruct-AWQ \
+SERVED_MODEL_NAME=Qwen3-VL-32B-Instruct-AWQ \
 PORT=8000 \
 MAX_MODEL_LEN=131072 \
 LIMIT_MM_IMAGES=80 \
@@ -107,4 +145,3 @@ CUDA_VISIBLE_DEVICES=2 PORT=8002 scripts/launch_vllm_qwen3_vl_8b_bf16.sh
 质量优先且预算允许：卡 2 起第二个 32B-AWQ 副本，把上游任务按视频维度分发到 `:8000` 和 `:8002`。
 
 精确定位优先：卡 2 放 embedding，按 `context.md` 的时间窗切 chunk，建立视频 RAG。
-

@@ -1,32 +1,91 @@
 # Video Understanding
 
-自部署短视频理解流水线，面向 10-15 分钟中文抖音视频，分开拿三类信号：
+面向中文短视频的本地视频理解流水线。当前目标是处理 10-15 分钟左右的抖音/短视频内容，同时拿到三类信息：
 
-- 画面内容：Qwen3-VL-32B-Instruct AWQ-INT4，卡 0 单卡 TP=1。
-- 烧录字幕/OCR：同一 VL 请求内按抽帧时间戳识别。
-- 音轨语音：卡 1 跑 faster-whisper/Whisper large，输出带时间戳转写。
+- 画面内容：人物、场景、动作、商品、界面元素等。
+- 烧录字幕/OCR：视频画面里的字幕、价格、品牌、账号、页面文字。
+- 音轨语音：口播、旁白、对话的带时间戳转写。
 
-输出会按时间戳融合成统一上下文，用于总结、打标、事实提取和 QA。
+默认部署策略是 `Qwen3-VL-32B-Instruct-AWQ` 负责视觉/OCR，`faster-whisper` 负责 ASR，然后按时间戳融合成统一上下文，用于总结、打标、事实提取和 QA。
 
-## 目录
+## Repository Layout
 
-- `configs/pipeline.yaml`：默认抽帧、服务 endpoint、ASR、融合与评测配置。
-- `video_understanding/`：CLI、下载适配器和流水线代码。
-- `scripts/launch_vllm_qwen3_vl_32b_awq.sh`：卡 0 主 VL 服务。
-- `scripts/launch_vllm_qwen3_vl_8b_bf16.sh`：卡 2 吞吐副本或 8B 回退服务。
-- `scripts/run_single_video.sh`：单条视频闭环。
-- `docs/deployment.md`：3×A100 PCIe 部署和验证步骤。
+- `configs/pipeline.yaml`：默认下载器、抽帧、VL 服务、ASR、融合、总结配置。
+- `video_understanding/`：CLI 和流水线实现。
+- `video_understanding/downloaders/`：URL 下载适配器，当前包含 `yt-dlp`、`twitter-video-downloader`、`ideaflow`。
+- `scripts/manage_vl_server.sh`：后台管理 Qwen3-VL vLLM 服务，支持 `start/stop/restart/status/tail`。
+- `scripts/launch_vllm_qwen3_vl_32b_awq.sh`：32B AWQ vLLM 前台启动器。
+- `scripts/launch_vllm_qwen3_vl_8b_bf16.sh`：8B bf16 回退或吞吐副本启动器。
+- `scripts/run_single_video.sh`：单条视频闭环脚本。
+- `docs/deployment.md`：3xA100 PCIe 部署细节和验证关口。
 
-## 安装
+## Execution Logic
 
-建议 Python 3.10 或 3.11。当前 vLLM/CUDA 生态通常不要用 Python 3.13 跑服务。
+`python -m video_understanding run <video-or-url>` 的完整流程如下：
+
+1. 输入解析
+   - 如果输入是本地视频路径，直接使用该文件。
+   - 如果输入是 URL 或分享文案，先提取第一个 URL，再进入下载层。
+
+2. 视频下载
+   - 下载器按 `configs/pipeline.yaml` 的 `download.order` 顺序尝试。
+   - 默认顺序是 `yt-dlp` -> `twitter-video-downloader` -> `ideaflow`。
+   - 下载成功后，原视频保存在当前 `workdir/source/` 下，并写入 `download_metadata.json`。
+
+3. 视频探测
+   - 用 `ffprobe` 读取视频总时长。
+   - 按 `video.segment_seconds` 切分时间窗，默认每 45 秒一段。
+
+4. 分段抽帧
+   - 用 `ffmpeg` 对每个时间窗抽帧。
+   - 默认 `fps=1.0`，也就是每秒 1 张图。
+   - 默认每段 45 秒，所以每段大约 45 张 JPG；最后一段按剩余时长决定。
+   - 默认最大边 `960`，减少视觉 token 和显存压力。
+
+5. 视觉/OCR 理解
+   - 每个时间窗的帧按 `image_url` data URL 形式发给 vLLM OpenAI-compatible `/v1/chat/completions`。
+   - 模型只看画面，不听音频。
+   - 输出每段的画面描述、OCR 字幕、关键实体、不确定项。
+   - 结果写入 `visual.jsonl`。
+
+6. 音频抽取和 ASR
+   - 用 `ffmpeg` 抽取 `audio.wav`。
+   - 用 `faster-whisper` 转写语音，默认模型是 `large-v3`，默认使用 GPU 1。
+   - 第一次运行 `large-v3` 时会下载 ASR 模型，后续走本地缓存。
+   - 结果写入 `asr.jsonl`。
+
+7. 时间戳融合
+   - 按时间窗对齐 `visual.jsonl` 和 `asr.jsonl`。
+   - 输出结构化 JSONL 和可读 Markdown。
+   - 结果写入 `fused.jsonl` 和 `context.md`。
+
+8. 总结或 QA
+   - 默认把 `context.md` 再发给同一个 OpenAI-compatible 服务做结构化总结。
+   - 如果提供 `--question`，则输出针对问题的回答。
+   - 结果写入 `summary.md` 或指定的输出文件。
+
+注意：流水线不会把完整 MP4 直接发给大模型。VL 模型收到的是按时间戳抽出的图片帧；ASR 模型收到的是抽取后的音频。
+
+## Environment
+
+推荐 Python 3.11。当前已验证的服务端组合：
+
+- `vllm==0.11.0`
+- `transformers>=4.57.1,<5`
+- `qwen-vl-utils==0.0.14`
+- `torch==2.8.x` CUDA 12.8 wheel
+
+`transformers` 不要升到 5.x；vLLM 0.11 的 tokenizer 缓存逻辑依赖 4.x 里的属性。
+
+示例安装：
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
+conda create -n video_understand python=3.11 -y
+conda activate video_understand
+
 pip install -U pip
-pip install -e ".[client,asr]"
-pip install "vllm>=0.11.0" "qwen-vl-utils==0.0.14"
+pip install -e ".[client,asr,server]"
+pip install "vllm==0.11.0" "transformers>=4.57.1,<5" "qwen-vl-utils==0.0.14"
 ```
 
 系统依赖：
@@ -36,56 +95,131 @@ sudo apt-get update
 sudo apt-get install -y ffmpeg
 ```
 
-## 启动服务
+如果使用 conda 环境运行后台服务，有两种方式：
 
-卡 0，32B AWQ-INT4 主理解：
+```bash
+conda activate video_understand
+scripts/manage_vl_server.sh start
+```
+
+或者不激活环境，显式传环境名：
+
+```bash
+CONDA_ENV=video_understand scripts/manage_vl_server.sh start
+```
+
+## Models
+
+当前默认使用社区 AWQ 量化权重：
+
+```bash
+hf download QuantTrio/Qwen3-VL-32B-Instruct-AWQ \
+  --local-dir models/Qwen3-VL-32B-Instruct-AWQ \
+  --max-workers 3
+```
+
+模型目录 `models/` 已被 `.gitignore` 忽略，不应提交到 GitHub。
+
+ASR 默认使用 `faster-whisper` 的 `large-v3`。首次运行 ASR 会自动下载模型。也可以提前触发下载：
+
+```bash
+python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cuda', device_index=1, compute_type='float16')"
+```
+
+## Start VL Server
+
+后台启动 GPU 0 的 32B AWQ 服务：
+
+```bash
+scripts/manage_vl_server.sh start
+```
+
+查看状态：
+
+```bash
+scripts/manage_vl_server.sh status
+curl http://127.0.0.1:8000/v1/models
+```
+
+查看日志：
+
+```bash
+scripts/manage_vl_server.sh tail
+```
+
+停止或重启：
+
+```bash
+scripts/manage_vl_server.sh stop
+scripts/manage_vl_server.sh restart
+```
+
+常用覆盖项：
+
+```bash
+CONDA_ENV=video_understand \
+CUDA_VISIBLE_DEVICES=0 \
+PORT=8000 \
+MAX_MODEL_LEN=131072 \
+LIMIT_MM_IMAGES=80 \
+scripts/manage_vl_server.sh start
+```
+
+如果要前台调试完整 vLLM 日志：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-MODEL=/models/Qwen3-VL-32B-Instruct-AWQ \
+MODEL=models/Qwen3-VL-32B-Instruct-AWQ \
+SERVED_MODEL_NAME=Qwen3-VL-32B-Instruct-AWQ \
 PORT=8000 \
 scripts/launch_vllm_qwen3_vl_32b_awq.sh
 ```
 
-卡 2，如果需要吞吐或回退 8B：
+空闲时 `nvidia-smi` 的 `GPU-Util` 显示 0% 是正常的。判断服务是否加载成功主要看 GPU 显存占用、`VLLM::EngineCore` 进程和 `/v1/models` 健康检查。
 
-```bash
-CUDA_VISIBLE_DEVICES=2 \
-MODEL=Qwen/Qwen3-VL-8B-Instruct \
-PORT=8002 \
-scripts/launch_vllm_qwen3_vl_8b_bf16.sh
-```
+## Run Pipeline
 
-## 单视频闭环
-
-先把链接解析/下载到本地：
-
-```bash
-python -m video_understanding fetch "https://..."
-```
-
-下载层会按 `configs/pipeline.yaml` 的 `download.order` 依次尝试：
-
-- `yt-dlp`：通用下载器。
-- `twitter-video-downloader`：通过 `twittervideodownloader.com` 解析 Twitter/X 视频。
-- `ideaflow`：通过 `parse.ideaflow.top` 解析抖音、小红书、快手、微博等链接。
-
-也可以直接把 URL 或分享文本传给完整流水线，程序会先下载再分析：
+处理本地视频：
 
 ```bash
 python -m video_understanding run /path/to/video.mp4 --workdir runs/demo
-python -m video_understanding run "https://..." --workdir runs/demo
 ```
 
-生成文件：
+处理 URL 或分享文案：
 
-- `runs/demo/visual.jsonl`：每个视频窗口的画面/OCR 输出。
-- `runs/demo/asr.jsonl`：语音转写片段。
-- `runs/demo/fused.jsonl`：按时间窗融合后的结构化上下文。
-- `runs/demo/context.md`：给总结、QA、RAG 使用的文本上下文。
-- `runs/demo/summary.md`：默认结构化总结。
+```bash
+python -m video_understanding run "https://v.douyin.com/xxxx/" --workdir runs/demo
+```
 
-单独 QA：
+只下载，不分析：
+
+```bash
+python -m video_understanding fetch "https://v.douyin.com/xxxx/" --output-dir runs/downloads
+```
+
+只跑视觉/OCR：
+
+```bash
+python -m video_understanding vl /path/to/video.mp4 --workdir runs/demo
+```
+
+只跑 ASR：
+
+```bash
+python -m video_understanding asr /path/to/video.mp4 --workdir runs/demo
+```
+
+只融合已有结果：
+
+```bash
+python -m video_understanding fuse \
+  --visual runs/demo/visual.jsonl \
+  --asr runs/demo/asr.jsonl \
+  --output-jsonl runs/demo/fused.jsonl \
+  --output-markdown runs/demo/context.md
+```
+
+对融合上下文做 QA：
 
 ```bash
 python -m video_understanding summarize \
@@ -94,9 +228,33 @@ python -m video_understanding summarize \
   --question "视频里提到的商品卖点和价格分别是什么？"
 ```
 
-## A/B 验证
+完整运行后默认输出：
 
-先跑本方案得到 `context.md`，再把 Qwen3-Omni-Thinking 的端到端输出存成 `omni.md`。
+- `source/`：下载或复制过来的原视频。
+- `frames/`：按时间窗抽出的 JPG 帧。
+- `audio.wav`：从视频抽取的 16kHz 单声道音频。
+- `visual.jsonl`：每个视频窗口的画面/OCR 输出。
+- `asr.jsonl`：语音转写片段。
+- `fused.jsonl`：按时间窗融合后的结构化上下文。
+- `context.md`：给总结、QA、RAG 使用的文本上下文。
+- `summary.md`：默认结构化总结。
+
+## Tuning
+
+主要参数在 `configs/pipeline.yaml`：
+
+- `video.fps`：默认 1。漏短动作时升到 2；成本会近似翻倍。
+- `video.segment_seconds`：默认 45。单段图片数约为 `fps * segment_seconds`。
+- `video.max_side`：默认 960。OCR 不清楚时可升高；显存/延迟压力大时降低。
+- `vl.max_tokens`：每段视觉/OCR 输出长度。
+- `asr.device_index`：默认 1，即第二张 GPU。
+- `summary.max_tokens`：最终总结或 QA 的输出长度。
+
+`LIMIT_MM_IMAGES` 要覆盖单段图片数。默认 `45s * 1fps = 45`，服务脚本默认 `LIMIT_MM_IMAGES=80`。
+
+## A/B Evaluation
+
+把当前 VL+ASR 输出和 Omni 端到端输出做对比：
 
 ```bash
 python -m video_understanding ab-eval \
@@ -105,4 +263,47 @@ python -m video_understanding ab-eval \
   --output runs/demo/ab_report.md
 ```
 
-这一步用于决定最终是否需要为非语音音频、音乐/情绪、音画联合理解引入 Omni。
+建议用 5-10 条真实样本覆盖：
+
+- 纯口播/旁白。
+- 大量烧录字幕。
+- 商品、价格、优惠、品牌信息。
+- 音乐或情绪驱动内容。
+- 需要精确片段定位的内容。
+
+决策规则：
+
+- 主要差距来自 OCR、画面细节、商品/界面文字：继续优化 VL+ASR。
+- 主要差距来自非语音音频、音乐情绪、音画联合事件：评估引入 Omni。
+- 主要差距来自定位：优先做视频 RAG/embedding，而不是盲目加大 VL 模型。
+
+## GitHub Hygiene
+
+这些目录不应提交：
+
+- `models/`
+- `runs/`
+- `downloads/`
+- `logs/`
+- `.run/`
+- `__pycache__/`
+
+提交前建议检查：
+
+```bash
+git status --short
+```
+
+同时用你们团队的 secret scanning 工具检查 token、私钥、绝对 home 路径和本机用户名。
+
+## TODO
+
+- 增加 `--skip-asr`、`--skip-vl`、`--skip-fusion`，让长视频失败后可断点续跑。
+- 增加本地 ASR 模型路径配置，避免生产环境首次运行时联网下载 `large-v3`。
+- 增加 Qwen3-ASR backend，与 faster-whisper 做中文口播质量对比。
+- 增加视频下载器的真实站点集成测试和失败样例记录。
+- 增加批量任务队列和多 VL 副本 router，支持 GPU 0/2 并发刷量。
+- 增加 embedding/RAG：按 `context.md` 时间窗切 chunk，支持精确片段检索。
+- 增加 A/B 评测模板，固化 VL+ASR vs Omni 的人工复核字段。
+- 增加 Dockerfile 或 systemd unit，规范生产部署和开机恢复。
+- 增加 CI：unit tests、shellcheck、README 命令 smoke test。

@@ -26,6 +26,70 @@ IDEAFLOW_DOMAINS = {
 }
 
 
+def _origin(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    return f"{parsed.scheme}://{parsed.netloc}/"
+
+
+def _media_header_candidates(source_url: str, base_url: str) -> list[dict[str, str]]:
+    browser_video_headers = {
+        "Accept": "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Range": "bytes=0-",
+        "Sec-Fetch-Dest": "video",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
+    }
+    referrers = [
+        None,
+        source_url,
+        _origin(source_url),
+        base_url,
+        _origin(base_url),
+        "https://www.douyin.com/",
+        "https://www.iesdouyin.com/",
+    ]
+    candidates: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for referrer in referrers:
+        headers = dict(browser_video_headers)
+        if referrer:
+            headers["Referer"] = referrer
+        key = tuple(sorted(headers.items()))
+        if key not in seen:
+            candidates.append(headers)
+            seen.add(key)
+    return candidates
+
+
+def download_ideaflow_media(
+    media_url: str,
+    output_dir: Path,
+    *,
+    filename: str,
+    source_url: str,
+    base_url: str,
+    timeout_seconds: int,
+) -> Path:
+    errors: list[str] = []
+    for headers in _media_header_candidates(source_url, base_url):
+        try:
+            return download_url_to_file(
+                media_url,
+                output_dir,
+                filename=filename,
+                headers=headers,
+                timeout_seconds=timeout_seconds,
+            )
+        except PipelineError as exc:
+            referrer = headers.get("Referer", "<none>")
+            errors.append(f"Referer={referrer}: {exc}")
+    detail = "\n".join(f"- {error}" for error in errors)
+    raise PipelineError(f"Ideaflow media URL parsed but all download attempts failed:\n{detail}")
+
+
 class IdeaflowDownloader:
     name = "ideaflow"
     default_base_url = "https://parse.ideaflow.top/"
@@ -62,21 +126,23 @@ class IdeaflowDownloader:
         cover_path = None
         cover_url = data.get("cover_url")
         if isinstance(cover_url, str) and cover_url:
-            cover_path = download_url_to_file(
+            cover_path = download_ideaflow_media(
                 normalize_media_url(cover_url, base_url=base_url),
                 output_dir,
                 filename=f"{stem}_cover",
-                headers={"Referer": base_url},
+                source_url=url,
+                base_url=base_url,
                 timeout_seconds=timeout_seconds,
             )
 
         video_url = data.get("video_url")
         if isinstance(video_url, str) and video_url:
-            video_path = download_url_to_file(
+            video_path = download_ideaflow_media(
                 normalize_media_url(video_url, base_url=base_url),
                 output_dir,
                 filename=f"{stem}.mp4",
-                headers={"Referer": base_url},
+                source_url=url,
+                base_url=base_url,
                 timeout_seconds=timeout_seconds,
             )
             files.append(video_path)
@@ -89,22 +155,24 @@ class IdeaflowDownloader:
             image_url = item.get("url")
             if isinstance(image_url, str) and image_url:
                 files.append(
-                    download_url_to_file(
+                    download_ideaflow_media(
                         normalize_media_url(image_url, base_url=base_url),
                         output_dir,
                         filename=f"{stem}_image_{index:03d}",
-                        headers={"Referer": base_url},
+                        source_url=url,
+                        base_url=base_url,
                         timeout_seconds=timeout_seconds,
                     )
                 )
             live_photo_url = item.get("live_photo_url")
             if isinstance(live_photo_url, str) and live_photo_url:
                 files.append(
-                    download_url_to_file(
+                    download_ideaflow_media(
                         normalize_media_url(live_photo_url, base_url=base_url),
                         output_dir,
                         filename=f"{stem}_live_{index:03d}.mp4",
-                        headers={"Referer": base_url},
+                        source_url=url,
+                        base_url=base_url,
                         timeout_seconds=timeout_seconds,
                     )
                 )

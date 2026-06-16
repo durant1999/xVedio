@@ -36,7 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "vl": {
         "base_url": "http://127.0.0.1:8000/v1",
         "api_key": "EMPTY",
-        "model": "Qwen/Qwen3-VL-32B-Instruct-AWQ",
+        "model": "Qwen3-VL-32B-Instruct-AWQ",
         "temperature": 0.0,
         "max_tokens": 1800,
         "timeout_seconds": 600,
@@ -56,7 +56,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "summary": {
         "base_url": "http://127.0.0.1:8000/v1",
         "api_key": "EMPTY",
-        "model": "Qwen/Qwen3-VL-32B-Instruct-AWQ",
+        "model": "Qwen3-VL-32B-Instruct-AWQ",
         "temperature": 0.1,
         "max_tokens": 2400,
         "timeout_seconds": 600,
@@ -64,7 +64,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ab_eval": {
         "judge_base_url": "http://127.0.0.1:8000/v1",
         "judge_api_key": "EMPTY",
-        "judge_model": "Qwen/Qwen3-VL-32B-Instruct-AWQ",
+        "judge_model": "Qwen3-VL-32B-Instruct-AWQ",
         "max_tokens": 2400,
         "timeout_seconds": 600,
     },

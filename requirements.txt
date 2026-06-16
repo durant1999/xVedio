@@ -1,4 +1,6 @@
 PyYAML>=6.0.2
 yt-dlp>=2025.1.1
 faster-whisper>=1.1.0
-
+vllm==0.11.0
+transformers>=4.57.1,<5
+qwen-vl-utils==0.0.14

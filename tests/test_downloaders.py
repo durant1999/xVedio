@@ -6,9 +6,10 @@ from pathlib import Path
 from unittest import mock
 
 from video_understanding.downloaders.base import DownloadResult
-from video_understanding.downloaders.ideaflow import IdeaflowDownloader
+from video_understanding.downloaders.ideaflow import IdeaflowDownloader, download_ideaflow_media
 from video_understanding.downloaders.registry import download_url
 from video_understanding.downloaders.twitter_video_downloader import (
+    download_twitter_media,
     extract_hidden_inputs,
     extract_video_links,
 )
@@ -39,11 +40,40 @@ class DownloaderUtilityTests(unittest.TestCase):
         page = """
         <a href="https://video.twimg.com/ext_tw_video/1/vid/640x360/a.mp4?tag=10">Download</a>
         <a href="https://video.twimg.com/ext_tw_video/1/vid/1280x720/b.mp4?tag=10">Download</a>
+        <a href="/en/">Download Another Video</a>
         """
 
         links = extract_video_links(page, base_url="https://twittervideodownloader.com/en/")
 
         self.assertEqual(links[0], "https://video.twimg.com/ext_tw_video/1/vid/1280x720/b.mp4?tag=10")
+        self.assertEqual(len(links), 2)
+
+    def test_twitter_media_download_rejects_html_and_retries(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            html_path = Path(temp_dir) / "bad.mp4"
+            video_path = Path(temp_dir) / "good.mp4"
+
+            def fake_download(url, output_dir, *, headers, **kwargs):
+                if headers.get("Referer") is None:
+                    html_path.write_bytes(b"<!DOCTYPE html><html>not video</html>")
+                    return html_path
+                video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\0" * 128)
+                return video_path
+
+            with mock.patch(
+                "video_understanding.downloaders.twitter_video_downloader.download_url_to_file",
+                side_effect=fake_download,
+            ) as patched:
+                path = download_twitter_media(
+                    "https://video.twimg.com/ext_tw_video/1/vid/1280x720/b.mp4",
+                    Path(temp_dir),
+                    filename="video.mp4",
+                    source_url="https://x.com/user/status/1",
+                    timeout_seconds=120,
+                )
+
+        self.assertEqual(path, video_path)
+        self.assertGreaterEqual(patched.call_count, 2)
 
 
 class IdeaflowDownloaderTests(unittest.TestCase):
@@ -83,6 +113,32 @@ class IdeaflowDownloaderTests(unittest.TestCase):
         self.assertEqual(len(result.files), 1)
         self.assertTrue(str(result.files[0]).endswith(".mp4"))
         self.assertIsNotNone(result.cover)
+
+    def test_ideaflow_media_download_retries_header_variants(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "video.mp4"
+
+            def fake_download(url, output_dir, *, filename, headers, **kwargs):
+                if headers.get("Referer") is None:
+                    raise PipelineError("HTTP 403 while downloading")
+                output.write_bytes(b"video")
+                return output
+
+            with mock.patch(
+                "video_understanding.downloaders.ideaflow.download_url_to_file",
+                side_effect=fake_download,
+            ) as patched:
+                path = download_ideaflow_media(
+                    "https://cdn.example/video.mp4",
+                    Path(temp_dir),
+                    filename="video.mp4",
+                    source_url="https://www.douyin.com/video/123",
+                    base_url="https://parse.ideaflow.top/",
+                    timeout_seconds=120,
+                )
+
+        self.assertEqual(path, output)
+        self.assertGreaterEqual(patched.call_count, 2)
 
 
 class RegistryTests(unittest.TestCase):

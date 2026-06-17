@@ -36,6 +36,7 @@ class MCPJobManagerTests(unittest.TestCase):
             self.assertIn("job_id", state)
             self.assertTrue(state["workdir"].endswith("/work"))
             self.assertIn("summary", state["artifacts"])
+            self.assertIn("progress", state["artifacts"])
             self.assertTrue(state["cleanup_media_on_success"])
 
             persisted = manager.read_state(state["job_id"])
@@ -69,12 +70,18 @@ class MCPJobManagerTests(unittest.TestCase):
             context_path = manager.artifact_path(job_id, "context")
             context_path.parent.mkdir(parents=True, exist_ok=True)
             context_path.write_text("abcdef", encoding="utf-8")
+            progress_path = manager.artifact_path(job_id, "progress")
+            progress_path.write_text('{"stage":"analyzing"}', encoding="utf-8")
 
             artifact = manager.read_artifact(job_id, "context", max_chars=3)
 
             self.assertTrue(artifact["exists"])
             self.assertEqual(artifact["content"], "abc")
             self.assertTrue(artifact["truncated"])
+
+            progress = manager.read_artifact(job_id, "progress")
+            self.assertTrue(progress["exists"])
+            self.assertEqual(progress["content"], '{"stage":"analyzing"}')
 
             with self.assertRaises(PipelineError):
                 manager.read_artifact(job_id, "../../etc/passwd")
@@ -103,6 +110,7 @@ class MCPJobManagerTests(unittest.TestCase):
                 workdir / "visual.jsonl",
                 workdir / "asr.jsonl",
                 workdir / "fused.jsonl",
+                workdir / "progress.json",
                 workdir / "source" / "download_metadata.json",
             ]
             heavy_files = [

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -162,9 +165,21 @@ def command_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _write_progress(workdir: Path, **fields: Any) -> None:
+    """Atomically write a small progress.json into the workdir (best-effort)."""
+    try:
+        path = Path(workdir) / "progress.json"
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(fields, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def command_run(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     workdir = workdir_for(config, args.video, args.workdir)
+    _write_progress(workdir, stage="downloading")
     video_path = download_video(args.video, workdir / "source", config.get("download"))
     duration = probe_duration(video_path)
 
@@ -182,9 +197,32 @@ def command_run(args: argparse.Namespace) -> int:
         video_config=video_config,
         video_path=video_path,
     )
+    windows = split_windows(duration, float(args.segment_seconds or video_config["segment_seconds"]))
+    _write_progress(
+        workdir,
+        stage="analyzing",
+        vl_total=len(windows),
+        vl_done=0,
+        asr_done=False,
+        skip_summary=bool(args.skip_summary),
+    )
+
+    asr_outcome: dict[str, Any] = {}
+
+    def _run_asr() -> None:
+        try:
+            audio_path = extract_audio(video_path, workdir / "audio.wav")
+            rows = transcribe_audio(audio_path, config["asr"])
+            write_jsonl(asr_path, rows)
+            asr_outcome["done"] = True
+        except BaseException as exc:
+            asr_outcome["error"] = exc
+
+    asr_thread = threading.Thread(target=_run_asr, name="asr", daemon=True)
+    asr_thread.start()
+
     vl_config = config["vl"]
     visual_rows: list[dict[str, Any]] = []
-    windows = split_windows(duration, float(args.segment_seconds or video_config["segment_seconds"]))
     for index, (start, end) in enumerate(windows):
         frame_dir = workdir / "frames" / f"{index:04d}_{int(start):06d}_{int(end):06d}"
         frames = extract_frames(
@@ -210,12 +248,26 @@ def command_run(args: argparse.Namespace) -> int:
         )
         visual_rows.append(row)
         write_jsonl(visual_path, visual_rows)
+        _write_progress(
+            workdir,
+            stage="analyzing",
+            vl_total=len(windows),
+            vl_done=index + 1,
+            asr_done=bool(asr_outcome.get("done")),
+        )
         print(f"VL {index + 1}/{len(windows)} {start:.1f}-{end:.1f}s")
 
-    audio_path = extract_audio(video_path, workdir / "audio.wav")
-    asr_rows = transcribe_audio(audio_path, config["asr"])
-    write_jsonl(asr_path, asr_rows)
+    asr_thread.join()
+    if "error" in asr_outcome:
+        raise asr_outcome["error"]
 
+    _write_progress(
+        workdir,
+        stage="fusing",
+        vl_total=len(windows),
+        vl_done=len(windows),
+        asr_done=True,
+    )
     fuse_files(
         visual_path,
         asr_path,
@@ -226,6 +278,7 @@ def command_run(args: argparse.Namespace) -> int:
     )
 
     if not args.skip_summary:
+        _write_progress(workdir, stage="summarizing")
         summarize_context(
             str(context_path),
             str(summary_path),
@@ -233,6 +286,7 @@ def command_run(args: argparse.Namespace) -> int:
             config=config["summary"],
         )
 
+    _write_progress(workdir, stage="done")
     print(workdir)
     return 0
 

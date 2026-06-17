@@ -27,6 +27,8 @@ ALLOWED_ARTIFACTS = {
     "asr.jsonl": "work/asr.jsonl",
     "fused": "work/fused.jsonl",
     "fused.jsonl": "work/fused.jsonl",
+    "progress": "work/progress.json",
+    "progress.json": "work/progress.json",
     "log": "job.log",
     "job.log": "job.log",
     "download_metadata": "work/source/download_metadata.json",

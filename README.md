@@ -57,15 +57,17 @@
 
 7. 时间戳融合
    - 按时间窗对齐 `visual.jsonl` 和 `asr.jsonl`。
+   - 如果存在 `download_metadata.json`，会把标题、作者、来源 URL 等写入 `context.md` 顶部的 `Source Metadata`。
    - 输出结构化 JSONL 和可读 Markdown。
    - 结果写入 `fused.jsonl` 和 `context.md`。
 
 8. 总结或 QA
    - 默认把 `context.md` 再发给同一个 OpenAI-compatible 服务做结构化总结。
    - 如果提供 `--question`，则输出针对问题的回答。
+   - 标题/作者等 Source Metadata 只作为理解主题、笑点、话题和创作者意图的背景；事实判断仍以 Visual/OCR 与 Speech 证据为准。
    - 结果写入 `summary.md` 或指定的输出文件。
 
-注意：流水线不会把完整 MP4 直接发给大模型。VL 模型收到的是按时间戳抽出的图片帧；ASR 模型收到的是抽取后的音频。
+注意：流水线不会把完整 MP4 直接发给大模型。VL 模型收到的是按时间戳抽出的图片帧；ASR 模型收到的是抽取后的音频。标题不会注入 VL 看图阶段，避免模型被标题诱导脑补画面。
 
 ## Environment
 
@@ -247,7 +249,7 @@ python -m video_understanding summarize \
 - `visual.jsonl`：每个视频窗口的画面/OCR 输出。
 - `asr.jsonl`：语音转写片段。
 - `fused.jsonl`：按时间窗融合后的结构化上下文。
-- `context.md`：给总结、QA、RAG 使用的文本上下文。
+- `context.md`：给总结、QA、RAG 使用的文本上下文，顶部包含不可信 Source Metadata 背景。
 - `summary.md`：默认结构化总结。
 
 BFF/MCP 异步任务成功后会默认清理重资产以节省磁盘：

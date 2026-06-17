@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -176,7 +177,9 @@ class RegistryTests(unittest.TestCase):
 
             self.assertEqual(result.downloader, "success")
             self.assertEqual(result.primary_video_path.name, "video.mp4")
-            self.assertTrue((Path(temp_dir) / "download_metadata.json").exists())
+            metadata = json.loads((Path(temp_dir) / "download_metadata.json").read_text())
+            self.assertEqual(metadata["original_input"], "look https://example.com/video")
+            self.assertEqual(metadata["title"], None)
 
 
 if __name__ == "__main__":

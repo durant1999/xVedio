@@ -40,9 +40,10 @@ def build_downloaders(config: dict[str, Any] | None = None) -> list[Downloader]:
     return downloaders
 
 
-def serialize_result(result: DownloadResult) -> dict[str, Any]:
+def serialize_result(result: DownloadResult, *, original_input: str | None = None) -> dict[str, Any]:
     return {
         "downloader": result.downloader,
+        "original_input": original_input,
         "source_url": result.source_url,
         "page_url": result.page_url,
         "title": result.title,
@@ -75,7 +76,7 @@ def download_url(
         try:
             result = downloader.download(url, target_dir, item_config)
             result.downloader = result.downloader or downloader.name
-            write_download_metadata(target_dir, serialize_result(result))
+            write_download_metadata(target_dir, serialize_result(result, original_input=source))
             return result
         except PipelineError as exc:
             errors.append(f"{downloader.name}: {exc}")

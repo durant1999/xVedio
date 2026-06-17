@@ -144,6 +144,7 @@ def command_fuse(args: argparse.Namespace) -> int:
         output_jsonl=output_jsonl,
         output_markdown=output_markdown,
         window_seconds=float(args.window_seconds or config["fusion"]["window_seconds"]),
+        metadata_path=args.metadata,
     )
     print(output_markdown)
     return 0
@@ -172,6 +173,7 @@ def command_run(args: argparse.Namespace) -> int:
     fused_path = workdir / "fused.jsonl"
     context_path = workdir / "context.md"
     summary_path = workdir / "summary.md"
+    metadata_path = workdir / "source" / "download_metadata.json"
 
     video_config = config["video"]
     enforce_configured_duration_limit(
@@ -220,6 +222,7 @@ def command_run(args: argparse.Namespace) -> int:
         output_jsonl=fused_path,
         output_markdown=context_path,
         window_seconds=float(config["fusion"]["window_seconds"]),
+        metadata_path=metadata_path,
     )
 
     if not args.skip_summary:
@@ -300,6 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
     fuse.add_argument("--output-jsonl", default=None)
     fuse.add_argument("--output-markdown", default=None)
     fuse.add_argument("--window-seconds", type=float, default=None)
+    fuse.add_argument("--metadata", default=None, help="Optional download_metadata.json path.")
     fuse.set_defaults(func=command_fuse)
 
     summarize = subparsers.add_parser("summarize", help="Summarize or QA over fused context.")

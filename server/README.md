@@ -78,6 +78,9 @@ Interactive docs: `http://127.0.0.1:8788/docs`.
 - Successful jobs delete source media, `frames/`, and `audio.wav` by default after
   text artifacts are ready. Set `XVIDEO_KEEP_MEDIA=1` before startup to keep
   those heavy intermediates for debugging or media playback.
+- When media is kept, the app can read representative frames via
+  `GET /jobs/{id}/frames`, binary files via `GET /jobs/{id}/file?path=...`, and
+  the retained source video via `GET /jobs/{id}/video`.
 - Device push tokens are stored in `runs/mcp_jobs/devices.json`, which is under
   the ignored runtime output tree.
 - Completion notifications are sent through Expo's push API. Python's urllib uses

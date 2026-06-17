@@ -14,10 +14,11 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -29,6 +30,9 @@ router = APIRouter(prefix="/jobs", tags=["jobs"], dependencies=[Depends(require_
 TERMINAL_STATES = {"succeeded", "failed", "cancelled", "unknown"}
 HEARTBEAT_SECONDS = 15.0
 logger = logging.getLogger(__name__)
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+_VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".m4v"}
+_SERVE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".wav"}
 
 
 def create_manager(settings: Any | None = None) -> Any:
@@ -109,6 +113,79 @@ def _state_or_404(manager: Any, job_id: str) -> dict[str, Any]:
             client_status=status.HTTP_404_NOT_FOUND,
             server_detail="Unexpected error while reading job state.",
         )
+
+
+def _job_workdir(manager: Any, job_id: str) -> Path:
+    state = _state_or_404(manager, job_id)
+    workdir = state.get("workdir")
+    if not workdir:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No workdir for job.",
+        )
+    return Path(workdir)
+
+
+def _safe_path(workdir: Path, rel: str) -> Path:
+    base = workdir.resolve()
+    target = (workdir / rel).resolve()
+    if base != target and base not in target.parents:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Path outside workdir.",
+        )
+    if target.suffix.lower() not in _SERVE_EXTS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="File type not served.",
+        )
+    if not target.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found.",
+        )
+    return target
+
+
+def _list_representative_frames(manager: Any, job_id: str) -> list[dict[str, Any]]:
+    workdir = _job_workdir(manager, job_id)
+    frames_dir = workdir / "frames"
+    out: list[dict[str, Any]] = []
+    if frames_dir.is_dir():
+        for segment_dir in sorted(path for path in frames_dir.iterdir() if path.is_dir()):
+            jpgs = sorted(segment_dir.glob("*.jpg"))
+            if not jpgs:
+                continue
+            representative = jpgs[len(jpgs) // 2]
+            parts = segment_dir.name.split("_")
+            start = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
+            end = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else None
+            out.append(
+                {
+                    "path": str(representative.relative_to(workdir)),
+                    "start": start,
+                    "end": end,
+                }
+            )
+    return out
+
+
+def _find_source_video(manager: Any, job_id: str) -> Path:
+    workdir = _job_workdir(manager, job_id)
+    source_dir = workdir / "source"
+    candidates: list[Path] = []
+    if source_dir.is_dir():
+        candidates = [
+            path
+            for path in source_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in _VIDEO_EXTS
+        ]
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No source video (set XVIDEO_KEEP_MEDIA=1 to retain it).",
+        )
+    return max(candidates, key=lambda path: path.stat().st_size)
 
 
 @router.post("")
@@ -196,6 +273,30 @@ async def read_artifact(
             client_status=status.HTTP_400_BAD_REQUEST,
             server_detail="Unexpected error while reading job artifact.",
         )
+
+
+@router.get("/{job_id}/frames")
+async def list_frames(job_id: str, manager: Any = Depends(get_manager)) -> dict[str, Any]:
+    """One representative frame per segment, with its time window."""
+    frames = await run_in_threadpool(_list_representative_frames, manager, job_id)
+    return {"frames": frames}
+
+
+@router.get("/{job_id}/file")
+async def serve_file(
+    job_id: str,
+    path: str = Query(...),
+    manager: Any = Depends(get_manager),
+) -> FileResponse:
+    workdir = await run_in_threadpool(_job_workdir, manager, job_id)
+    target = await run_in_threadpool(_safe_path, workdir, path)
+    return FileResponse(str(target))
+
+
+@router.get("/{job_id}/video")
+async def serve_video(job_id: str, manager: Any = Depends(get_manager)) -> FileResponse:
+    target = await run_in_threadpool(_find_source_video, manager, job_id)
+    return FileResponse(str(target))
 
 
 @router.get("/{job_id}/events")
